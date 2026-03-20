@@ -14,6 +14,7 @@
    ]).
 
 :- use_module(tensorbasic_dcg).
+:- use_module(tensorbasic_interpolate).
 :- use_module(libtorch_ffi).
 
 % ---------------------------------------------------------------------------
@@ -25,7 +26,8 @@
 run_tensorbasic(Source) :-
     parse_tensorbasic(Source, AST),
     sort(1, @=<, AST, Sorted),      % sort by line number
-    initial_env(Sorted, Env),
+    interpolate_ast(Sorted, Expanded),  % expand for_range templates
+    initial_env(Expanded, Env),
     eval_loop(Env).
 
 %% run_tensorbasic_file(+Path)

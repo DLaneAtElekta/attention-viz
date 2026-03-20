@@ -12,6 +12,21 @@
  *      actual libtorch calls; this DCG produces an AST that the evaluator
  *      walks.
  *
+ *  Template interpolation
+ *  ──────────────────────
+ *    Identifiers may contain {Var} placeholders:
+ *          dim e{L}_wq(768, 768) as float32
+ *    These appear in the AST as tpl_ident([e, tvar('L'), '_wq']).
+ *
+ *    The for_range / end_range block groups template lines:
+ *          100 for_range L in 0..11
+ *          110   dim e{L}_wq(768, 768) as float32
+ *          120 end_range
+ *
+ *    After parsing, a separate interpolation pass (tensorbasic_interpolate)
+ *    groups for_range/end_range markers, then expands each block by
+ *    substituting every integer in the range.
+ *
  *  Usage
  *  ─────
  *    ?- phrase(program(AST), `10 dim a(3,4)\n20 let b = zeros(3,4)\n`, []).
@@ -174,6 +189,15 @@ stmt(backward(E)) -->
 %% no_grad block markers
 stmt(no_grad) --> kw("no_grad").
 stmt(end_no_grad) --> kw("end_no_grad").
+
+%% for_range / end_range — template expansion markers
+%%   for_range L in 0..11
+%%   end_range
+stmt(for_range(Var, From, To)) -->
+    kw("for_range"), ws1, ident(Var),
+    ws1, kw("in"), ws1,
+    integer(From), [0'.], [0'.], integer(To).
+stmt(end_range) --> kw("end_range").
 
 %% save / load tensors
 stmt(save(Var, Path)) -->
@@ -429,16 +453,65 @@ match_codes([])     --> [].
 match_codes([C|Cs]) --> [C], match_codes(Cs).
 
 %% Identifier — starts with letter or _, contains alnum / _
-%%   Returns an atom.
+%%   Returns an atom for plain identifiers, or tpl_ident(Parts) for
+%%   identifiers containing {Var} template placeholders.
+%%   e.g.  e{L}_wq  →  tpl_ident([e, tvar('L'), '_wq'])
+%%         foo       →  foo
 ident(Name) -->
-    [C], { code_type(C, alpha) ; C =:= 0'_ },
-    ident_rest(Cs),
-    { atom_codes(Name, [C|Cs]),
-      \+ reserved(Name) }.
+    ident_parts(Parts),
+    { build_ident(Parts, Name) }.
 
-ident_rest([C|Cs]) -->
-    [C], { code_type(C, alnum) ; C =:= 0'_ }, ident_rest(Cs).
-ident_rest([]) --> [].
+%% Parse one or more identifier segments (plain chars and/or {Var} refs).
+%% The first segment must start with alpha/_, subsequent segments after
+%% a {Var} can start with alnum/_ (e.g. e{L}_wq: "_wq" starts with _).
+ident_parts([P|Ps]) --> ident_first_part(P), ident_parts_rest(Ps).
+
+ident_parts_rest([P|Ps]) --> ident_cont_part(P), ident_parts_rest(Ps).
+ident_parts_rest([])      --> [].
+
+%% A {Var} template variable reference.
+tvar_part(tvar(Var)) -->
+    [0'{], tvar_chars([C|Cs]), [0'}],
+    { atom_codes(Var, [C|Cs]) }.
+
+%% First segment of an identifier: must start with alpha or _.
+ident_first_part(P) --> tvar_part(P).
+ident_first_part(str(Atom)) -->
+    [C], { code_type(C, alpha) ; C =:= 0'_ },
+    ident_char_rest(Cs),
+    { atom_codes(Atom, [C|Cs]) }.
+
+%% Continuation segments (after a {Var}): can start with alnum or _.
+ident_cont_part(P) --> tvar_part(P).
+ident_cont_part(str(Atom)) -->
+    [C], { code_type(C, alnum) ; C =:= 0'_ },
+    ident_char_rest(Cs),
+    { atom_codes(Atom, [C|Cs]) }.
+
+ident_char_rest([C|Cs]) -->
+    [C], { code_type(C, alnum) ; C =:= 0'_ }, ident_char_rest(Cs).
+ident_char_rest([]) --> [].
+
+%% Inside {Var}, accept alnum/_ chars.
+tvar_chars([C|Cs]) -->
+    [C], { code_type(C, alnum) ; C =:= 0'_ }, tvar_chars_rest(Cs).
+tvar_chars_rest([C|Cs]) -->
+    [C], { code_type(C, alnum) ; C =:= 0'_ }, tvar_chars_rest(Cs).
+tvar_chars_rest([]) --> [].
+
+%% Build the final identifier from parsed parts.
+%% Single plain str → plain atom (backwards compatible).
+%% Contains any tvar → tpl_ident(Parts).
+build_ident([str(Atom)], Atom) :-
+    \+ reserved(Atom), !.
+build_ident(Parts, tpl_ident(Parts)) :-
+    member(tvar(_), Parts), !.
+build_ident(Parts, Atom) :-
+    %% Multiple str parts, no tvars (shouldn't normally happen).
+    maplist([str(A), Cs]>>atom_codes(A, Cs), Parts, CodeLists),
+    append(CodeLists, AllCodes),
+    atom_codes(Atom, AllCodes),
+    \+ reserved(Atom).
 
 reserved(rem).
 reserved(dim).
@@ -473,6 +546,9 @@ reserved(no_grad).
 reserved(end_no_grad).
 reserved(save).
 reserved(load).
+reserved(for_range).
+reserved(end_range).
+reserved(in).
 reserved(tensor).
 reserved(newaxis).
 reserved(true).
