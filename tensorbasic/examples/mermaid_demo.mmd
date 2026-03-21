@@ -1,0 +1,26 @@
+sequenceDiagram
+    participant Main as Main Program
+    participant L1000 as FORWARD PASS
+    participant L2000 as SGD UPDATE
+
+    Note over Main: hyperparameters
+    Note over Main: WEIGHT INITIALISATION
+    Note over Main: TRAINING LOOP
+    loop for epoch = 1 to epochs
+        loop for batch = 0 to 100
+            Main->>+L1000: gosub 1000
+            L1000-->>-Main: return
+            Main->>+L2000: gosub 2000
+            L2000-->>-Main: return
+        end
+    end
+    Note over Main: INFERENCE
+    Main->>+L1000: gosub 1000
+    L1000-->>-Main: return
+    Note over Main: goto 9000
+    Note over L1000: FORWARD PASS
+    Note over L2000: SGD UPDATE
+    loop loss > 0.01
+        L2000->>L2000: back to 2100
+    end
+    Note over Main: END
