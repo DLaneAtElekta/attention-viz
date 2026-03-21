@@ -215,6 +215,18 @@ subst_expr(int(N), _, _, int(N)) :- !.
 subst_expr(float(F), _, _, float(F)) :- !.
 subst_expr(str(S), _, _, str(S)) :- !.
 subst_expr(bool(B), _, _, bool(B)) :- !.
+subst_expr(regex(P, F), _, _, regex(P, F)) :- !.
+
+%% Interpolated string: tpl_str([str('x='), var(x), ...])
+%%   Substitute template variables within the string parts.
+subst_expr(tpl_str(Parts), Var, Val, tpl_str(Parts2)) :- !,
+    maplist({Var, Val}/[P, P2]>>subst_str_part(P, Var, Val, P2), Parts, Parts2).
+
+subst_str_part(str(S), _, _, str(S)) :- !.
+subst_str_part(var(Name), Var, Val, var(Name2)) :- !,
+    subst_name(Name, Var, Val, Name2).
+subst_str_part(Expr, Var, Val, Expr2) :-
+    subst_expr(Expr, Var, Val, Expr2).
 
 subst_expr(var(Name), Var, Val, var(Name2)) :- !,
     subst_name(Name, Var, Val, Name2).

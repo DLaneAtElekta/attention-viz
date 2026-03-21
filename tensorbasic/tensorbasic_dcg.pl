@@ -27,6 +27,22 @@
  *    groups for_range/end_range markers, then expands each block by
  *    substituting every integer in the range.
  *
+ *  String interpolation
+ *  ────────────────────
+ *    Strings may contain {expr} placeholders evaluated at runtime:
+ *          let msg$ = "epoch {epoch}, loss = {loss}"
+ *    These produce tpl_str([str('epoch '), var(epoch), str(', loss = '), var(loss)])
+ *    in the AST.  The evaluator concatenates the parts at runtime.
+ *
+ *  Regex matching
+ *  ──────────────
+ *    Regex literals use the r"..." prefix:
+ *          let pat = r"^\d{4}-\d{2}-\d{2}"
+ *    The =~ and !~ operators test regex match/non-match:
+ *          if text$ =~ r"\d+" then ...
+ *    Built-in functions:  regex_match, regex_find$, regex_findall$,
+ *          regex_replace$, regex_split$, regex_groups$
+ *
  *  Usage
  *  ─────
  *    ?- phrase(program(AST), `10 dim a(3,4)\n20 let b = zeros(3,4)\n`, []).
@@ -245,12 +261,14 @@ comparison(E) --> add_expr(L), cmp_rest(L, E).
 cmp_rest(Acc, E) --> ws, cmp_op(Op), ws, add_expr(R), cmp_rest(cmp(Op,Acc,R), E).
 cmp_rest(E, E)   --> [].
 
-cmp_op(eq)  --> [0'=].
-cmp_op(neq) --> [0'<, 0'>].
-cmp_op(leq) --> [0'<, 0'=].
-cmp_op(geq) --> [0'>, 0'=].
-cmp_op(lt)  --> [0'<].
-cmp_op(gt)  --> [0'>].
+cmp_op(eq)     --> [0'=].
+cmp_op(neq)    --> [0'<, 0'>].
+cmp_op(leq)    --> [0'<, 0'=].
+cmp_op(geq)    --> [0'>, 0'=].
+cmp_op(match)  --> [0'=, 0'~].    %  =~  regex match
+cmp_op(nmatch) --> [0'!, 0'~].    %  !~  regex non-match
+cmp_op(lt)     --> [0'<].
+cmp_op(gt)     --> [0'>].
 
 %% Addition / subtraction
 add_expr(E) --> mul_expr(L), add_rest(L, E).
@@ -294,7 +312,7 @@ postfix_rest(E, E) --> [].
 
 primary(E) --> lparen, expr(E), rparen.
 primary(E) --> number(E).
-primary(E) --> string_literal(E).
+primary(E) --> string_literal(E).    %  includes r"..." regex literals
 primary(E) --> boolean(E).
 primary(E) --> tensor_literal(E).
 primary(E) --> builtin_call(E).
@@ -404,6 +422,30 @@ is_builtin(embedding).
 % attention
 is_builtin(scaled_dot_product_attention).
 is_builtin(multi_head_attention).
+% string operations
+is_builtin(len).          %  len(s)             → integer length
+is_builtin(mid$).         %  mid$(s, start, n)  → substring
+is_builtin(left$).        %  left$(s, n)        → first n chars
+is_builtin(right$).       %  right$(s, n)       → last n chars
+is_builtin(instr).        %  instr(haystack, needle)  → position (0-based, -1 if not found)
+is_builtin(upper$).       %  upper$(s)          → uppercase
+is_builtin(lower$).       %  lower$(s)          → lowercase
+is_builtin(trim$).        %  trim$(s)           → strip whitespace
+is_builtin(str$).         %  str$(n)            → number to string
+is_builtin(val).          %  val(s)             → string to number
+is_builtin(chr$).         %  chr$(n)            → char from code point
+is_builtin(asc).          %  asc(s)             → code point of first char
+is_builtin(replace$).     %  replace$(s, old, new)  → string replace
+is_builtin(split$).       %  split$(s, delim)   → array of substrings
+is_builtin(join$).        %  join$(arr, delim)   → concatenate with delimiter
+is_builtin(format$).      %  format$(template, args...) → formatted string
+% regex operations
+is_builtin(regex_match).  %  regex_match(s, pattern)      → bool
+is_builtin(regex_find$).  %  regex_find$(s, pattern)      → first match or ""
+is_builtin(regex_findall$). % regex_findall$(s, pattern)  → array of all matches
+is_builtin(regex_replace$). % regex_replace$(s, pat, rep) → replaced string
+is_builtin(regex_split$).   % regex_split$(s, pattern)    → array of parts
+is_builtin(regex_groups$).  % regex_groups$(s, pattern)   → array of capture groups
 
 % ---------------------------------------------------------------------------
 %  Slice / index expressions
@@ -574,13 +616,77 @@ digit(D) --> [D], { code_type(D, digit) }.
 line_number(N) --> integer(N).
 
 %% String literal  — "..."
-string_literal(str(S)) -->
-    [0'"], string_chars(Cs), [0'"],
-    { atom_codes(S, Cs) }.
+%%   Plain:        "hello world"          →  str('hello world')
+%%   Interpolated: "hello {name}!"        →  tpl_str([str(hello ), var(name), str(!)])
+%%   Regex:        r"^\d+\s"             →  regex('^\d+\s')
+%%
+%%   Inside a string, {expr} interpolates a variable or expression.
+%%   The r"..." prefix creates a compiled regex pattern.
 
-string_chars([0'\\, C|Cs]) --> [0'\\, C], string_chars(Cs).
-string_chars([C|Cs])       --> [C], { C \== 0'", C \== 0'\n }, string_chars(Cs).
-string_chars([])           --> [].
+string_literal(E) --> regex_literal(E).
+string_literal(E) --> interpolated_string(E).
+
+%% Regex literal:  r"pattern"  or  r"pattern"flags
+%%   r"\d+"       → regex('\\d+', '')
+%%   r"^\w+"i     → regex('^\\w+', i)
+regex_literal(regex(Pattern, Flags)) -->
+    [0'r], [0'"], regex_chars(Cs), [0'"],
+    regex_flags(FCs),
+    { atom_codes(Pattern, Cs),
+      atom_codes(Flags, FCs) }.
+
+regex_chars([0'\\, C|Cs]) --> [0'\\, C], !, regex_chars(Cs).
+regex_chars([C|Cs])       --> [C], { C \== 0'", C \== 0'\n }, regex_chars(Cs).
+regex_chars([])           --> [].
+
+regex_flags([C|Cs]) -->
+    [C], { memberchk(C, [0'i, 0'g, 0'm, 0's, 0'x]) },
+    regex_flags(Cs).
+regex_flags([]) --> [].
+
+%% Interpolated string:  "text {var} more text"
+%%   If no {…} placeholders, yields plain str(S).
+%%   If any {…}, yields tpl_str(Parts) where Parts is a list of
+%%   str(Text) and var(Name) / expr nodes.
+interpolated_string(E) -->
+    [0'"], istr_parts(Parts), [0'"],
+    { build_tpl_str(Parts, E) }.
+
+istr_parts([P|Ps]) --> istr_part(P), !, istr_parts(Ps).
+istr_parts([])     --> [].
+
+%% Interpolation placeholder: {var} or {expr}
+istr_part(interp(Expr)) -->
+    [0'{], ws, istr_expr(Expr), ws, [0'}].
+
+%% Text segment (non-empty run of chars that aren't " or { or newline)
+istr_part(str(S)) -->
+    istr_text_codes([C|Cs]),
+    { atom_codes(S, [C|Cs]) }.
+
+istr_text_codes([0'\\, C|Cs]) --> [0'\\, C], !, istr_text_codes(Cs).
+istr_text_codes([C|Cs]) -->
+    [C],
+    { C \== 0'", C \== 0'{, C \== 0'\n },
+    istr_text_codes(Cs).
+istr_text_codes([]) --> [].
+
+%% Expression inside {…} — reuse the full expression parser.
+istr_expr(E) --> expr(E).
+
+%% Build the result: plain str if no interpolation, tpl_str otherwise.
+build_tpl_str(Parts, str(S)) :-
+    \+ member(interp(_), Parts),
+    !,
+    maplist(part_text, Parts, Texts),
+    atomic_list_concat(Texts, S).
+build_tpl_str(Parts, tpl_str(Normalized)) :-
+    maplist(normalize_str_part, Parts, Normalized).
+
+part_text(str(S), S).
+
+normalize_str_part(str(S), str(S)).
+normalize_str_part(interp(E), E).     % unwrap interp()
 
 %% Booleans
 boolean(bool(true))  --> kw("true").
