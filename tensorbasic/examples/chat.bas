@@ -42,13 +42,13 @@ rem =====================================================
 
 600 let turn = turn + 1
 610 print ""
-620 print "Turn "; turn
+620 print "Turn {turn}"
 630 print "─────────────────────────────────"
 640 input "You: "; user_text$
 
-650 rem --- check for quit command ---
-660 if user_text$ = "/quit" then goto 9000
-670 if user_text$ = "/clear" then goto 5000
+650 rem --- check for commands (regex match on /slash patterns) ---
+660 if user_text$ =~ r"^/quit"i then goto 9000
+670 if user_text$ =~ r"^/clear"i then goto 5000
 
 700 rem ============================================================
 710 rem  TOKENISE USER INPUT

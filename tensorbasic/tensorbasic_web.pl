@@ -507,6 +507,8 @@ main { padding: 16px 24px; }
 .hl-builtin { color: #50fa7b; }
 .hl-ident   { color: #8be9fd; }
 .hl-op      { color: #ffb86c; }
+.hl-regex   { color: #ff6e6e; font-style: italic; }
+.hl-interp  { color: #50fa7b; font-weight: bold; }
 
 /* Diagram */
 .diagram-container {

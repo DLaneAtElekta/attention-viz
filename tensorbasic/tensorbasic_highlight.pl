@@ -91,12 +91,63 @@ hl_body(Codes, [rem(All)]) :-
     append("rem", After, AllCodes),
     atom_codes(All, Codes).
 
-%  String literal "..."
-hl_body([0'"|Cs], [str(S)|Rest]) :-
-    span_string(Cs, Inner, Tail),
-    append([0'"|Inner], [0'"], SCodes),
+%  Regex literal r"..."
+hl_body([0'r, 0'"|Cs], Tokens) :-
+    !,
+    span_string(Cs, Inner, Tail0),
+    %  Consume optional flags after closing quote
+    span_regex_flags(Tail0, FlagCodes, Tail),
+    append([0'r, 0'"|Inner], [0'"], SCodes0),
+    append(SCodes0, FlagCodes, SCodes),
     atom_codes(S, SCodes),
-    hl_body(Tail, Rest).
+    hl_body(Tail, Rest),
+    Tokens = [regex_lit(S)|Rest].
+
+%  String literal "..." (with interpolation highlighting)
+hl_body([0'"|Cs], Tokens) :-
+    span_istring(Cs, Parts, Tail),
+    hl_body(Tail, Rest),
+    append(Parts, Rest, Tokens).
+
+%% span_istring: tokenise string contents, splitting on {…} interpolations.
+%% Returns a list of str(...) and interp(...) tokens, bookended by str_delim.
+span_istring(Codes, [str_delim('"')|Tokens], Tail) :-
+    span_istring_(Codes, Inner, Tail),
+    append(Inner, [str_delim('"')], Tokens).
+
+span_istring_([], [], []).
+span_istring_([0'"|Cs], [], Cs).  % closing quote
+span_istring_([0'{|Cs], [str_delim('{')|InterpTokens], Tail) :-
+    !,
+    span_until_close_brace(Cs, InterpCodes, AfterBrace),
+    atom_codes(InterpAtom, InterpCodes),
+    append([interp_body(InterpAtom), str_delim('}')], RestTokens, InterpTokens),
+    span_istring_(AfterBrace, RestTokens, Tail).
+span_istring_([0'\\, C|Cs], [str_seg(S)|Rest], Tail) :-
+    !,
+    span_str_segment(Cs, MoreCodes, Cs2),
+    atom_codes(S, [0'\\, C|MoreCodes]),
+    span_istring_(Cs2, Rest, Tail).
+span_istring_([C|Cs], [str_seg(S)|Rest], Tail) :-
+    C \== 0'", C \== 0'{, C \== 0'\n,
+    span_str_segment(Cs, MoreCodes, Cs2),
+    atom_codes(S, [C|MoreCodes]),
+    span_istring_(Cs2, Rest, Tail).
+
+span_str_segment([C|Cs], [C|Rest], Tail) :-
+    C \== 0'", C \== 0'{, C \== 0'\n, C \== 0'\\,
+    !, span_str_segment(Cs, Rest, Tail).
+span_str_segment(Cs, [], Cs).
+
+span_until_close_brace([], [], []).
+span_until_close_brace([0'}|Cs], [], Cs).
+span_until_close_brace([C|Cs], [C|Rest], Tail) :-
+    span_until_close_brace(Cs, Rest, Tail).
+
+span_regex_flags([C|Cs], [C|Rest], Tail) :-
+    memberchk(C, [0'i, 0'g, 0'm, 0's, 0'x]),
+    !, span_regex_flags(Cs, Rest, Tail).
+span_regex_flags(Cs, [], Cs).
 
 %  Number
 hl_body(Codes, [num(N)|Rest]) :-
@@ -155,13 +206,15 @@ is_alnum_under(0'$).   % BASIC string variable suffix
 is_alnum_under(0'%).   % BASIC integer variable suffix
 
 is_op(0'+). is_op(0'-). is_op(0'*). is_op(0'/). is_op(0'^).
-is_op(0'=). is_op(0'<). is_op(0'>).
+is_op(0'=). is_op(0'<). is_op(0'>). is_op(0'!). is_op(0'~).
 is_op(0'(). is_op(0')). is_op(0',). is_op(0';). is_op(0':).
 is_op(0'.).
 
 two_char_op(0'<, 0'=).
 two_char_op(0'>, 0'=).
 two_char_op(0'<, 0'>).
+two_char_op(0'=, 0'~).    %  =~ regex match
+two_char_op(0'!, 0'~).    %  !~ regex non-match
 
 % ---------------------------------------------------------------------------
 %  Span helpers
@@ -341,6 +394,18 @@ token_to_html(rem(R), H) :-
 token_to_html(str(S), H) :-
     html_escape(S, E),
     format(atom(H), '<span class="hl-string">~w</span>', [E]).
+token_to_html(regex_lit(S), H) :-
+    html_escape(S, E),
+    format(atom(H), '<span class="hl-regex">~w</span>', [E]).
+token_to_html(str_delim(D), H) :-
+    html_escape(D, E),
+    format(atom(H), '<span class="hl-string">~w</span>', [E]).
+token_to_html(str_seg(S), H) :-
+    html_escape(S, E),
+    format(atom(H), '<span class="hl-string">~w</span>', [E]).
+token_to_html(interp_body(S), H) :-
+    html_escape(S, E),
+    format(atom(H), '<span class="hl-interp">~w</span>', [E]).
 token_to_html(num(N), H) :-
     html_escape(N, E),
     format(atom(H), '<span class="hl-number">~w</span>', [E]).

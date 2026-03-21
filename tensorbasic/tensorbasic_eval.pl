@@ -205,6 +205,13 @@ eval_expr(int(N), _, N).
 eval_expr(float(F), _, F).
 eval_expr(str(S), _, S).
 eval_expr(bool(B), _, B).
+eval_expr(regex(Pat, Flags), _, regex(Pat, Flags)).
+
+%% Interpolated string: tpl_str([str('hello '), var(x), str('!')])
+%%   Evaluates each part, converts to string, concatenates.
+eval_expr(tpl_str(Parts), Env, Result) :-
+    maplist({Env}/[Part, S]>>eval_str_part(Part, Env, S), Parts, Strings),
+    atomic_list_concat(Strings, Result).
 
 eval_expr(var(Name), Env, Val) :-
     get_var(Name, Env, Val).
@@ -302,6 +309,20 @@ eval_cmp(gt,  A, B, R) :- ( A  >  B -> R = true ; R = false ).
 eval_cmp(leq, A, B, R) :- ( A =<  B -> R = true ; R = false ).
 eval_cmp(geq, A, B, R) :- ( A >=  B -> R = true ; R = false ).
 
+%% String equality (when operands are atoms/strings, not numbers).
+eval_cmp(eq,  A, B, R) :- atom(A), atom(B), !, ( A == B -> R = true ; R = false ).
+eval_cmp(neq, A, B, R) :- atom(A), atom(B), !, ( A \== B -> R = true ; R = false ).
+
+%% Regex match:  string =~ regex(Pattern, Flags)
+eval_cmp(match, Str, regex(Pat, Flags), R) :- !,
+    do_regex_match(Str, Pat, Flags, R).
+eval_cmp(match, Str, Pat, R) :-
+    atom(Pat), !,
+    do_regex_match(Str, Pat, '', R).
+eval_cmp(nmatch, Str, Regex, R) :-
+    eval_cmp(match, Str, Regex, R0),
+    ( R0 == true -> R = false ; R = true ).
+
 truthy(0) :- !, fail.
 truthy(0.0) :- !, fail.
 truthy(false) :- !, fail.
@@ -328,3 +349,191 @@ find_line_idx(N, Lines, Idx) :-
 find_line_idx(N, _, _) :-
     format(atom(Msg), "Line ~w not found", [N]),
     throw(error(tensorbasic_error(Msg), _)).
+
+% ---------------------------------------------------------------------------
+%  String interpolation helpers
+% ---------------------------------------------------------------------------
+
+%% eval_str_part(+Part, +Env, -String)
+%  Convert a tpl_str part to a string for concatenation.
+eval_str_part(str(S), _, S).
+eval_str_part(Expr, Env, S) :-
+    Expr \= str(_),
+    eval_expr(Expr, Env, Val),
+    value_to_string(Val, S).
+
+%% value_to_string(+Value, -String)
+%  Convert any tensorBASIC value to a printable string.
+value_to_string(V, S) :- atom(V), !, atom_string(V, S).
+value_to_string(V, S) :- number(V), !, number_string(V, S).
+value_to_string(V, S) :- is_torch_tensor(V), !, torch_to_string(V, S).
+value_to_string(V, S) :- term_string(V, S).
+
+% ---------------------------------------------------------------------------
+%  Regex helpers
+% ---------------------------------------------------------------------------
+
+:- use_module(library(pcre), [re_match/2, re_match/3,
+                              re_matchsub/4, re_foldl/6,
+                              re_split/3, re_replace/4]).
+
+%% do_regex_match(+String, +Pattern, +Flags, -Bool)
+do_regex_match(Str, Pat, Flags, R) :-
+    atom_string(Str, S),
+    atom_string(Pat, P),
+    regex_options(Flags, Opts),
+    ( re_match(P/Opts, S) -> R = true ; R = false ).
+
+%% regex_options(+FlagsAtom, -OptString)
+%  Convert flag chars to PCRE option atoms.
+regex_options('', "").
+regex_options(Flags, Opts) :-
+    Flags \= '',
+    atom_codes(Flags, Codes),
+    maplist(flag_to_opt, Codes, OptList),
+    atomic_list_concat(OptList, Opts).
+
+flag_to_opt(0'i, caseless).
+flag_to_opt(0'm, multiline).
+flag_to_opt(0's, dotall).
+flag_to_opt(0'x, extended).
+flag_to_opt(0'g, '').         % global — handled by re_foldl, not a PCRE flag
+
+% ---------------------------------------------------------------------------
+%  String built-in function dispatch
+%  (called via torch_call/3 for non-tensor operations)
+% ---------------------------------------------------------------------------
+
+:- multifile libtorch_ffi:torch_call/3.
+
+libtorch_ffi:torch_call(len, [S], R) :-
+    atom(S), !, atom_length(S, R).
+libtorch_ffi:torch_call('str$', [N], R) :-
+    number(N), !, number_string(N, Str), atom_string(R, Str).
+libtorch_ffi:torch_call(val, [S], R) :-
+    atom(S), !, atom_number(S, R).
+libtorch_ffi:torch_call('upper$', [S], R) :-
+    atom(S), !, upcase_atom(S, R).
+libtorch_ffi:torch_call('lower$', [S], R) :-
+    atom(S), !, downcase_atom(S, R).
+libtorch_ffi:torch_call('trim$', [S], R) :-
+    atom(S), !, atom_string(S, Str),
+    normalize_space(atom(R), Str).
+libtorch_ffi:torch_call('chr$', [N], R) :-
+    integer(N), !, char_code(R, N).
+libtorch_ffi:torch_call(asc, [S], R) :-
+    atom(S), !, atom_codes(S, [R|_]).
+libtorch_ffi:torch_call('mid$', [S, Start, Len], R) :-
+    atom(S), !, sub_atom(S, Start, Len, _, R).
+libtorch_ffi:torch_call('left$', [S, N], R) :-
+    atom(S), !, sub_atom(S, 0, N, _, R).
+libtorch_ffi:torch_call('right$', [S, N], R) :-
+    atom(S), !, atom_length(S, L), Start is L - N,
+    sub_atom(S, Start, N, _, R).
+libtorch_ffi:torch_call(instr, [Haystack, Needle], R) :-
+    atom(Haystack), atom(Needle), !,
+    ( sub_atom(Haystack, R, _, _, Needle) -> true ; R = -1 ).
+libtorch_ffi:torch_call('replace$', [S, Old, New], R) :-
+    atom(S), atom(Old), atom(New), !,
+    atomic_list_concat(Parts, Old, S),
+    atomic_list_concat(Parts, New, R).
+libtorch_ffi:torch_call('format$', [Template|Args], R) :-
+    atom(Template), !,
+    format_string_interp(Template, Args, R).
+libtorch_ffi:torch_call('split$', [S, Delim], R) :-
+    atom(S), atom(Delim), !,
+    atomic_list_concat(Parts, Delim, S),
+    R = Parts.
+libtorch_ffi:torch_call('join$', [Parts, Delim], R) :-
+    is_list(Parts), atom(Delim), !,
+    atomic_list_concat(Parts, Delim, R).
+
+%% Regex built-in functions
+libtorch_ffi:torch_call(regex_match, [S, regex(P, F)], R) :- !,
+    do_regex_match(S, P, F, R).
+libtorch_ffi:torch_call(regex_match, [S, P], R) :-
+    atom(P), !, do_regex_match(S, P, '', R).
+libtorch_ffi:torch_call('regex_find$', [S, regex(P, F)], R) :- !,
+    regex_find_first(S, P, F, R).
+libtorch_ffi:torch_call('regex_find$', [S, P], R) :-
+    atom(P), !, regex_find_first(S, P, '', R).
+libtorch_ffi:torch_call('regex_findall$', [S, regex(P, F)], R) :- !,
+    regex_find_all(S, P, F, R).
+libtorch_ffi:torch_call('regex_findall$', [S, P], R) :-
+    atom(P), !, regex_find_all(S, P, '', R).
+libtorch_ffi:torch_call('regex_replace$', [S, regex(P, F), Repl], R) :- !,
+    regex_replace(S, P, F, Repl, R).
+libtorch_ffi:torch_call('regex_replace$', [S, P, Repl], R) :-
+    atom(P), !, regex_replace(S, P, '', Repl, R).
+libtorch_ffi:torch_call('regex_split$', [S, regex(P, F)], R) :- !,
+    regex_do_split(S, P, F, R).
+libtorch_ffi:torch_call('regex_split$', [S, P], R) :-
+    atom(P), !, regex_do_split(S, P, '', R).
+libtorch_ffi:torch_call('regex_groups$', [S, regex(P, F)], R) :- !,
+    regex_groups(S, P, F, R).
+libtorch_ffi:torch_call('regex_groups$', [S, P], R) :-
+    atom(P), !, regex_groups(S, P, '', R).
+
+%% Regex helper implementations
+regex_find_first(Str, Pat, Flags, Result) :-
+    atom_string(Str, S), atom_string(Pat, P),
+    regex_options(Flags, Opts),
+    ( re_matchsub(P/Opts, S, Sub, [])
+    -> get_dict(0, Sub, Result)
+    ;  Result = ''
+    ).
+
+regex_find_all(Str, Pat, Flags, Results) :-
+    atom_string(Str, S), atom_string(Pat, P),
+    regex_options(Flags, Opts),
+    re_foldl({}/[M, Acc, [Match|Acc]]>>(get_dict(0, M, Match)),
+             P/Opts, S, [], RevResults),
+    reverse(RevResults, Results).
+
+regex_replace(Str, Pat, Flags, Repl, Result) :-
+    atom_string(Str, S), atom_string(Pat, P), atom_string(Repl, R),
+    regex_options(Flags, Opts),
+    re_replace(P/Opts, R, S, Result0),
+    atom_string(Result, Result0).
+
+regex_do_split(Str, Pat, Flags, Results) :-
+    atom_string(Str, S), atom_string(Pat, P),
+    regex_options(Flags, Opts),
+    re_split(P/Opts, S, Parts0),
+    %  re_split returns interleaved [text, sep, text, sep, ...]; keep text only.
+    odds_only(Parts0, Results).
+
+odds_only([], []).
+odds_only([X], [X]).
+odds_only([X, _|Rest], [X|Rs]) :- odds_only(Rest, Rs).
+
+regex_groups(Str, Pat, Flags, Groups) :-
+    atom_string(Str, S), atom_string(Pat, P),
+    regex_options(Flags, Opts),
+    ( re_matchsub(P/Opts, S, Sub, [])
+    ->  dict_pairs(Sub, _, Pairs),
+        exclude([K-_]>>(\+ atom_number(K, _)), Pairs, NumPairs),
+        sort(1, @=<, NumPairs, Sorted),
+        pairs_values(Sorted, Groups0),
+        %  Group 0 is the full match; groups start at 1
+        ( Groups0 = [_|Groups] -> true ; Groups = [] )
+    ;   Groups = []
+    ).
+
+%% Simple format$ implementation: replaces {0}, {1}, etc. with args.
+format_string_interp(Template, Args, Result) :-
+    atom_string(Template, T),
+    format_replace_args(T, Args, 0, Result).
+
+format_replace_args(T, [], _, R) :- atom_string(R, T).
+format_replace_args(T, [A|As], N, R) :-
+    format(string(Placeholder), "{~w}", [N]),
+    value_to_string(A, AStr),
+    ( split_string(T, "", "", _),
+      atomics_to_text([T], T1),
+      re_replace(Placeholder, AStr, T1, T2)
+    ->  true
+    ;   T2 = T
+    ),
+    N1 is N + 1,
+    format_replace_args(T2, As, N1, R).
