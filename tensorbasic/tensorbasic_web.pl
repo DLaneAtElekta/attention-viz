@@ -43,6 +43,7 @@
 :- use_module(tensorbasic_mermaid, [ast_to_mermaid/2]).
 :- use_module(tensorbasic_highlight, [highlight_source/2]).
 :- use_module(tensorbasic_umap, [ast_to_umap_json/2]).
+:- use_module(chat_agent, [handle_chat/1, handle_chat_models/1]).
 
 % ---------------------------------------------------------------------------
 %  Server lifecycle
@@ -83,6 +84,10 @@ stop_server :-
 :- http_handler(root(api/mermaid), handle_api_mermaid, []).
 :- http_handler(root(api/umap),    handle_api_umap,   []).
 :- http_handler(root(api/ast),     handle_api_ast,    []).
+
+%% Chat agent routes
+:- http_handler(root(api/chat),        handle_chat,        [methods([post, options])]).
+:- http_handler(root(api/chat/models), handle_chat_models, [methods([get, options])]).
 
 % ---------------------------------------------------------------------------
 %  Handlers
@@ -147,6 +152,7 @@ handle_api_source(Request) :-
     validate_filename(File),
     bas_file_path(File, Path),
     read_file_to_string(Path, Source, []),
+    format('Access-Control-Allow-Origin: *\r\n'),
     format('Content-Type: text/plain; charset=utf-8\r\n\r\n'),
     write(Source).
 
@@ -157,6 +163,7 @@ handle_api_highlight(Request) :-
     bas_file_path(File, Path),
     read_file_to_string(Path, Source, []),
     highlight_source(Source, HTML),
+    format('Access-Control-Allow-Origin: *\r\n'),
     format('Content-Type: text/html; charset=utf-8\r\n\r\n'),
     write(HTML).
 
@@ -168,6 +175,7 @@ handle_api_mermaid(Request) :-
     read_file_to_string(Path, Source, []),
     parse_tensorbasic(Source, AST),
     ast_to_mermaid(AST, Mermaid),
+    format('Access-Control-Allow-Origin: *\r\n'),
     format('Content-Type: text/plain; charset=utf-8\r\n\r\n'),
     write(Mermaid).
 
@@ -188,6 +196,7 @@ handle_api_ast(Request) :-
     bas_file_path(File, Path),
     read_file_to_string(Path, Source, []),
     parse_tensorbasic(Source, AST),
+    format('Access-Control-Allow-Origin: *\r\n'),
     format('Content-Type: text/plain; charset=utf-8\r\n\r\n'),
     print_term(AST, [output(current_output)]).
 
@@ -554,10 +563,12 @@ main { padding: 16px 24px; }
 % ---------------------------------------------------------------------------
 
 reply_html(HTML) :-
+    format('Access-Control-Allow-Origin: *\r\n'),
     format('Content-Type: text/html; charset=utf-8\r\n\r\n'),
     write(HTML).
 
 reply_json_atom(JSON) :-
+    format('Access-Control-Allow-Origin: *\r\n'),
     format('Content-Type: application/json; charset=utf-8\r\n\r\n'),
     write(JSON).
 
