@@ -2,8 +2,11 @@ import { InjectionKey } from 'vue'
 import { createStore, useStore as baseUseStore, Store } from 'vuex'
 import * as dataService from "@/services/dataService";
 
-// init default 
+// init default
 import { Typing } from "@/utils/typing";
+
+import chatModule from "./modules/chat";
+import tensorbasicModule from "./modules/tensorbasic";
 
 // Vuex docs: https://vuex.vuejs.org/
 
@@ -48,6 +51,9 @@ export interface State {
   showAll: boolean; // labels
   showAttention: boolean; // attention lines
   sizeByNorm: boolean; // dot size
+
+  // platform mode
+  platformMode: 'attention' | 'tensorbasic';
 }
 
 // define injection key
@@ -93,8 +99,11 @@ export const store = createStore<State>({
     showAll: false,
     showAttention: false,
     sizeByNorm: false,
+    platformMode: 'attention',
   },
-  modules: { // each module can contain its own state, mutations, actions, etc.
+  modules: {
+    chat: chatModule,
+    tensorbasic: tensorbasicModule,
   },
   getters: {
   },
@@ -200,6 +209,10 @@ export const store = createStore<State>({
     setSizeByNorm(state, sizeByNorm) {
       state.sizeByNorm = sizeByNorm;
       console.log('setSizeByNorm', sizeByNorm);
+    },
+    setPlatformMode(state, mode: 'attention' | 'tensorbasic') {
+      state.platformMode = mode;
+      console.log('setPlatformMode', mode);
     },
   },
   actions: { // actions commit mutations

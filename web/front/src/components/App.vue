@@ -1,7 +1,11 @@
 <template>
   <nav class="navbar navbar-light bg-light">
     <div class="container-fluid">
-      <span class="navbar-brand mb-0 h1">Attention Viz</span>
+      <span class="navbar-brand mb-0 h1">{{ platformMode === 'attention' ? 'Attention Viz' : 'tensorBASIC' }}</span>
+      <div class="platform-toggle">
+        <a-button :type="platformMode === 'attention' ? 'primary' : 'text'" size="small" @click="setPlatformMode('attention')">Attention</a-button>
+        <a-button :type="platformMode === 'tensorbasic' ? 'primary' : 'text'" size="small" @click="setPlatformMode('tensorbasic')">tensorBASIC</a-button>
+      </div>
       <div class="dropdown">
         <label for="layernum" style="margin-left: 0">Zoom to Layer</label>
         <a-tooltip placement="bottomRight">
@@ -56,7 +60,7 @@
     </div>
   </nav>
   <div class="main">
-    <div class="row">
+    <div class="row" v-if="platformMode === 'attention'">
       <div :class="{ 'col-10': showAttn && view == 'attn', 'col-12': !showAttn || view != 'attn' }">
         <Projection ref="projection" />
       </div>
@@ -65,6 +69,14 @@
           <AttnMapWrapper id="attn-wrap" />
         </div>
       </Transition>
+    </div>
+    <div class="row" v-else-if="platformMode === 'tensorbasic'">
+      <div class="col-9">
+        <TensorBasicPanel />
+      </div>
+      <div class="col-3">
+        <ChatPanel />
+      </div>
     </div>
   </div>
 </template>
@@ -77,12 +89,14 @@ import { useStore } from "@/store/index";
 
 import Projection from "./Projection/Projection.vue";
 import AttnMapWrapper from "./AttnMap/AttnMapWrapper.vue";
+import ChatPanel from "./Chat/ChatPanel.vue";
+import TensorBasicPanel from "./TensorBasic/TensorBasicPanel.vue";
 
 import { onMounted, computed, reactive, toRefs, h, watch, ref } from "vue";
 
 export default defineComponent({
   name: "App",
-  components: { Projection, AttnMapWrapper },
+  components: { Projection, AttnMapWrapper, ChatPanel, TensorBasicPanel },
   setup() {
     const store = useStore();
 
@@ -98,7 +112,8 @@ export default defineComponent({
       userTheme: computed(() => store.state.userTheme),
       icon: "moon",
       modalVisible: true,
-      showAttn: computed(() => store.state.showAttn)
+      showAttn: computed(() => store.state.showAttn),
+      platformMode: computed(() => store.state.platformMode),
     });
 
     // Init the store to read data from backend
@@ -181,6 +196,14 @@ export default defineComponent({
       state.modalVisible = false;
     }
 
+    const setPlatformMode = (mode: 'attention' | 'tensorbasic') => {
+      store.commit('setPlatformMode', mode);
+      if (mode === 'tensorbasic') {
+        store.dispatch('tensorbasic/loadFiles');
+        store.dispatch('chat/loadModels');
+      }
+    }
+
 
     watch([() => state.storeHead, () => state.storeLayer],
       () => {
@@ -201,7 +224,8 @@ export default defineComponent({
       setTheme,
       getMediaPreference,
       closeModal,
-      showModal
+      showModal,
+      setPlatformMode,
     };
   },
 });
@@ -602,6 +626,13 @@ label {
   .modal-buttons .ant-btn:not(:first-child) {
     margin-top: 10px !important;
   }
+}
+
+// platform toggle
+.platform-toggle {
+  display: flex;
+  gap: 4px;
+  margin-left: 10px;
 }
 
 // attn div
